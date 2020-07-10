@@ -1,0 +1,22 @@
+version: '3.7'
+
+x-node: &node
+  image: $IMAGE
+  command:
+    - --replSet
+    - rs
+  environment:
+    - MONGO_INITDB_ROOT_USERNAME=root
+    - MONGO_INITDB_ROOT_PASSWORD=secret
+
+services: 
+  node1:
+    <<: *node
+    hostname: node1
+  node2:
+    <<: *node
+    hostname: node2
+  node3:
+    <<: *node
+    hostname: node3
+# mongo -u root -p secret --quiet --eval 'rs.initiate({_id:"rs", members: [{_id:0,host:"node1:27017"},{_id:1,host:"node2:27017"},{_id:2,host:"node3:27017"}]})'

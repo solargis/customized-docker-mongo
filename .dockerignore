@@ -1,0 +1,3 @@
+/*
+!/docker-entrypoint-startdb.d
+!/docker-entrypoint.sh
