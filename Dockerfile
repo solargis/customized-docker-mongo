@@ -19,3 +19,4 @@ RUN mkhomedir_helper mongodb \
   && rm /usr/local/bin/docker-entrypoint.sh~
 
 COPY ./docker-hooks.d/ /docker-hooks.d/
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 CMD [ "mongo", "--quiet", "/docker-hooks.d/health-check.js" ]
