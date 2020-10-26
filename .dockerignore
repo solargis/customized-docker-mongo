@@ -1,3 +1,5 @@
 /*
 !/docker-*.d
 !/docker-entrypoint.sh
+!/src
+!/lib

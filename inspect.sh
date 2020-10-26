@@ -349,6 +349,10 @@ if [ "$originalArgOne" = 'mongod' ]; then
 		echo
 	fi
 
+	for f in /docker-hooks.d/prestart-*.sh; do
+		if [ -f "$f" ]; then echo "$0: running $f"; . "$f"; fi
+	done
+
 	# MongoDB 3.6+ defaults to localhost-only binding
 	haveBindIp=
 	if _mongod_hack_have_arg --bind_ip "$@" || _mongod_hack_have_arg --bind_ip_all "$@"; then

@@ -68,9 +68,9 @@ build)
   exec docker build -t "$IMAGE" --build-arg "MONGO_TAG=$MONGO_TAG" "$@" .
   ;;
 inspect)
-  "$BASH_SOURCE" build && _start --rm || exit
+  "$BASH_SOURCE" build && _start || exit
   [ "$2" == "logs" ] && container logs -tf &
-  trap '{ container stop; }' EXIT
+  trap '{ container stop; container rm; }' EXIT
   shift
   [ "$#" -eq 0 ] && set -- bash
   inspect
@@ -118,7 +118,7 @@ test)
 
   "$BASH_SOURCE" compose up -d 2>/dev/null || exit
 
-  wait-for --min=3 --msg="Wait for 1st cluster..." --fail '[ "$("$BASH_SOURCE" compose exec -T node1 mongo --quiet --eval "1")" -eq 1 ]'
+  wait-for --min=3 --msg="1st cluster 1st start..." --fail '[ "$("$BASH_SOURCE" compose exec -T node1 mongo --quiet --eval "1")" -eq 1 ]'
   wait-for --msg="All nodes was initialized..." --fail --debug='"$BASH_SOURCE" compose logs 2>&1 | grep -F "prestart-keyFile.sh: "' \
     '[ "$("$BASH_SOURCE" compose logs 2>&1 | grep -F "prestart-keyFile.sh: " | wc -l)" -eq 3 ]'
   wait-for --msg="Check auto authorize mongo cli..." --fail \
@@ -127,7 +127,7 @@ test)
   RESULT="$("$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret --quiet --eval \
   'JSON.stringify(rs.initiate({_id:"rs", members: [{_id:0,host:"node1:27017"},{_id:1,host:"node2:27017"},{_id:2,host:"node3:27017"}]}))')"
   [ "$(jq '.ok' <<<"$RESULT")" -eq 1 ] || fail jq <<<"$RESULT"
-  wait-for --msg="Wait for cluster initialized..." --fail \
+  wait-for --min=3 --msg="1st cluster 1st start initialized..." --fail \
     --debug='"$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret --quiet --eval "JSON.stringify(rs.status())" | jq' \
     '[ "$("$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret --quiet --eval "JSON.stringify(rs.status())" | jq ".ok")" -eq 1 ]'
   "$BASH_SOURCE" compose stop 2>/dev/null || exit
@@ -138,12 +138,12 @@ test)
   wait-for --msg="All nodes was initialized 2nd time..." --fail \
     --debug='"$BASH_SOURCE" compose logs 2>&1 | grep -F "prestart-keyFile.sh: "' \
     '[ "$("$BASH_SOURCE" compose logs 2>&1 | grep -F "prestart-keyFile.sh: " | wc -l)" -eq 6 ]'
-  wait-for --msg="Wait for cluster initialized..." --fail \
+  wait-for --msg="1st cluster 2st start initialized..." --fail \
     --debug='"$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret --quiet --eval "JSON.stringify(rs.status())" | jq' \
     '[ "$("$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret --quiet --eval "JSON.stringify(rs.status())" | jq ".ok")" -eq 1 ]'
   "$BASH_SOURCE" compose down 2>/dev/null || exit
 
-  CLUSTER_CONFIG='{_id:"rs", members: [{_id:0,host:"node1:27017"},{_id:1,host:"node2:27017"},{_id:2,host:"node3:27017"}]}' "$BASH_SOURCE" compose up -d 2>/dev/null || exit
+  INIT_CLUSTER='{_id:"rs", members: [{_id:0,host:"node1:27017"},{_id:1,host:"node2:27017"},{_id:2,host:"node3:27017"}]}' "$BASH_SOURCE" compose up -d 2>/dev/null || exit
   wait-for --min=3 --msg="Wait for 2nd cluster..." --fail '[ "$("$BASH_SOURCE" compose exec -T node1 mongo --quiet --eval "1")" -eq 1 ]'
   wait-for --msg="All nodes was initialized..." --fail \
     --debug='"$BASH_SOURCE" compose logs 2>&1 | grep -F "prestart-keyFile.sh: "' \

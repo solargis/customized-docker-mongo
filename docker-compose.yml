@@ -6,7 +6,6 @@ x-node: &node
     - --replSet
     - rs
   environment:
-    - CLUSTER_CONFIG
     - MONGO_INITDB_ROOT_USERNAME=root
     - MONGO_INITDB_ROOT_PASSWORD=secret
 
@@ -14,12 +13,19 @@ services:
   node1:
     <<: *node
     hostname: node1
+    environment:
+      - INIT_CLUSTER
+      - INIT_USERS
+      - MONGO_INITDB_ROOT_USERNAME=root
+      - MONGO_INITDB_ROOT_PASSWORD=secret
     healthcheck:
-      test: [CMD, mongo, --quiet, /docker-hooks.d/health-check.js]
-      start_period: 5s
+      test: [CMD-SHELL, 'exit "$$(cat /home/mongodb/init.state 2>/dev/null || echo 1)"']
+      start_period: 8s
       timeout: 5s
       interval: 8s
       retries: 3
+    ports:
+      - 8090:8090
   node2:
     <<: *node
     hostname: node2
