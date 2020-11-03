@@ -1,6 +1,6 @@
 #!/bin/bash
 cd "$(dirname "$BASH_SOURCE")"
-MONGO_TAG="${MONGO_TAG:-3.4.24}"
+MONGO_TAG="${MONGO_TAG:-4.2}"
 export IMAGE="solargis/mongo:${TAG:-$MONGO_TAG}"
 export CONTAINER="test-mongo"
 

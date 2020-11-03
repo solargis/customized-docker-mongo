@@ -1,4 +1,4 @@
-ARG MONGO_TAG=3.4.24
+ARG MONGO_TAG=4.2
 FROM mongo:$MONGO_TAG as daemonizer
 RUN apt-get update && apt-get install -y --no-install-recommends curl build-essential git
 RUN curl -sL https://github.com/bmc/daemonize/archive/release-1.7.8.tar.gz | tar xzf - \
@@ -10,7 +10,7 @@ COPY src /initializer
 WORKDIR /initializer
 RUN go build && chmod +x /initializer/initializer && cp /initializer/initializer /out
 
-ARG MONGO_TAG=3.4.24
+ARG MONGO_TAG=4.2
 FROM mongo:$MONGO_TAG
 COPY --from=daemonizer /out /usr/local/bin
 RUN mkhomedir_helper mongodb \

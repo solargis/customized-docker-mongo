@@ -249,7 +249,7 @@ func initClusterConfig(config string) bool {
 	state.InitCluster.Try++
 	out, err := mongoEval(fmt.Sprintf("let config = %s;", config), "/usr/local/lib/init-mongo-cluster.js")
 	if err == nil {
-		infoLogger.Println("Raw init cluster result:", string(out))
+		infoLogger.Println("Raw result of init-mongo-cluster.js:", string(out))
 		dat := clusterStatus{}
 		if len(out) > 0 {
 
@@ -295,7 +295,7 @@ func initUsersConfig(config string) bool {
 	state.InitUsers.Try++
 	out, err := mongoEval(replSetURL(""), fmt.Sprintf("let config = %s;", config), "/usr/local/lib/init-mongo-users.js")
 	if err == nil {
-		infoLogger.Println("raw:", string(out))
+		infoLogger.Println("Raw result of init-mongo-users.js:", string(out))
 		if len(out) > 0 {
 			messages, parsed := parseMongoResult(out, &state.InitUsers.Status)
 			if parsed && len(messages) > 0 {
