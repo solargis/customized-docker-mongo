@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"reflect"
 	"regexp"
 	"strings"
 	"time"
@@ -217,6 +218,7 @@ type clusterStatus struct {
 	Ok           int            `json:"ok"`
 	ErrorCode    int            `json:"code,omitempty"`
 	ErrorName    string         `json:"codeName,omitempty"`
+	Messages     []string       `json:"messages,omitempty"`
 	ErrorMessage string         `json:"errmsg,omitempty"`
 	MyState      int            `json:"myState,omitempty"`
 	Members      []statusMember `json:"members,omitempty"`
@@ -225,13 +227,7 @@ type clusterStatus struct {
 		ID      string         `json:"_id"`
 		Members []ConfigMenber `json:"members"`
 	} `json:"config,omitempty"`
-	ModifyResult struct {
-		Ok           int    `json:"ok"`
-		ErrorCode    int    `json:"code,omitempty"`
-		ErrorName    string `json:"codeName,omitempty"`
-		ErrorMessage string `json:"errmsg,omitempty"`
-	} `json:"modify_result,omitempty"`
-	Modified bool `json:"modified"`
+	Changes []map[string]interface{} `json:"changes,omitempty"`
 }
 
 func verifyMongoState(withPrimary bool) bool {
@@ -253,17 +249,27 @@ func initClusterConfig(config string) bool {
 	state.InitCluster.Try++
 	out, err := mongoEval(fmt.Sprintf("let config = %s;", config), "/usr/local/lib/init-mongo-cluster.js")
 	if err == nil {
-		infoLogger.Println("raw:", string(out))
+		infoLogger.Println("Raw result of init-mongo-cluster.js:", string(out))
 		dat := clusterStatus{}
 		if len(out) > 0 {
+
 			if err := json.Unmarshal([]byte(out), &dat); err != nil {
 				panic(err)
 			}
 			var result, _ = json.Marshal(dat)
 			infoLogger.Println(string(result))
+			if state.InitCluster.Status != nil && state.InitCluster.Status.Changes != nil {
+				if dat.Changes == nil {
+					dat.Changes = state.InitCluster.Status.Changes
+				} else {
+					dat.Changes = append(state.InitCluster.Status.Changes, dat.Changes...)
+				}
+			}
 			state.InitCluster.Status = &dat
 			state.InitCluster.Error = nil
-			return dat.Ok == 1 && find(dat.Members, func(it statusMember) bool { return it.State == 1 }) != nil
+			return dat.Ok == 1 &&
+				len(dat.Members) == len(dat.Config.Members) &&
+				find(dat.Members, func(it statusMember) bool { return it.State == 1 }) != nil
 		}
 	} else {
 		state.InitCluster.Error = strings.Split(strings.TrimSpace(fmt.Sprintf("%s\n%s", err, string(out))), "\n")
@@ -271,15 +277,36 @@ func initClusterConfig(config string) bool {
 	return false
 }
 
+func isArray(s interface{}) bool {
+	if s == nil {
+		return false
+	}
+	switch reflect.TypeOf(s).Kind() {
+	case reflect.Array:
+		return true
+	case reflect.Slice:
+		return true
+	default:
+		return false
+	}
+}
+
 func initUsersConfig(config string) bool {
 	state.InitUsers.Try++
 	out, err := mongoEval(replSetURL(""), fmt.Sprintf("let config = %s;", config), "/usr/local/lib/init-mongo-users.js")
 	if err == nil {
-		infoLogger.Println("raw:", string(out))
+		infoLogger.Println("Raw result of init-mongo-users.js:", string(out))
 		if len(out) > 0 {
 			messages, parsed := parseMongoResult(out, &state.InitUsers.Status)
 			if parsed && len(messages) > 0 {
-				state.InitUsers.Status["messages"] = messages
+				messages = append([]string{fmt.Sprintf("---[ %d. exuctution (success) ]:", state.InitUsers.Try)}, messages...)
+				if isArray(state.InitUsers.Status["messages"]) {
+					state.InitUsers.Status["messages"] = append(state.InitUsers.Status["messages"].([]string), messages...)
+				} else if state.InitUsers.Error != nil {
+					state.InitUsers.Status["messages"] = append(state.InitUsers.Error, messages...)
+				} else {
+					state.InitUsers.Status["messages"] = messages
+				}
 			}
 			result, _ := json.Marshal(state.InitUsers.Status)
 			infoLogger.Println(string(result))
@@ -287,7 +314,13 @@ func initUsersConfig(config string) bool {
 			return parsed
 		}
 	} else {
-		state.InitUsers.Error = strings.Split(strings.TrimSpace(fmt.Sprintf("%s\n%s", err, string(out))), "\n")
+		messages := strings.Split(strings.TrimSpace(fmt.Sprintf("%s\n%s", err, string(out))), "\n")
+		messages = append([]string{fmt.Sprintf("---[ %d. exuctution (failed) ]:", state.InitUsers.Try)}, messages...)
+		if state.InitUsers.Error != nil {
+			state.InitUsers.Error = append(state.InitUsers.Error, messages...)
+		} else {
+			state.InitUsers.Error = messages
+		}
 	}
 	return false
 }

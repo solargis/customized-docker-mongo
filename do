@@ -41,7 +41,7 @@ wait-for() {
   done
   echo -e "\x1b[u\x1b[0K$COUNT_STATE \x1b[0;32m$(($(date +%s) - $START))s\x1b[0m"
 }
-inspect() { env PS1='\[\033[34m\]\w\[\033[00m\]:\[\033[33m\]inspect\[\033[00m\]$ ' bash --norc; }
+inspect() { PS1='\[\033[34m\]\w\[\033[00m\]:\[\033[33m\]inspect\[\033[00m\]$ ' bash --norc; }
 _is_runing() { [ "$(docker ps "$@" | awk -v c="$CONTAINER" '$NF==c' | wc -l)" -ge 1 ]; }
 _start() {
   _is_runing && container stop
@@ -54,7 +54,7 @@ _mongo_status() {
   local FILTER=cat
   [ "$1" == "--prety" ] && FILTER=jq
   docker exec "$CONTAINER" \
-  mongo --username 'root' --password 'secret' \
+  mongo --username 'root' --password 'secret' admin \
   --quiet --eval "JSON.stringify(rs.status())" | $FILTER
 }
 _dim() {
@@ -124,12 +124,18 @@ test)
   wait-for --msg="Check auto authorize mongo cli..." --fail \
     --debug='"$BASH_SOURCE" compose exec -T node1 mongo --quiet --eval "load('"'"'/root/.mongorc.js'"'"');print(JSON.stringify(rs.status()))" | jq' \
     '[ "$("$BASH_SOURCE" compose exec -T node1 mongo --quiet --eval "load('"'"'/root/.mongorc.js'"'"');print(rs.status().code)")" -eq 94 ]'
-  RESULT="$("$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret --quiet --eval \
-  'JSON.stringify(rs.initiate({_id:"rs", members: [{_id:0,host:"node1:27017"},{_id:1,host:"node2:27017"},{_id:2,host:"node3:27017"}]}))')"
-  [ "$(jq '.ok' <<<"$RESULT")" -eq 1 ] || fail jq <<<"$RESULT"
+  RESULT="$("$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret admin --quiet --eval \
+    'JSON.stringify(rs.initiate({_id:"rs", members: [{_id:0,host:"node1:27017"}]}))')"
+    [ "$(jq '.ok' <<<"$RESULT")" -eq 1 ] || fail jq <<<"$RESULT"
+  wait-for --msg="Add node2 to replicaSet..." --fail \
+    --debug='"$BASH_SOURCE" compose exec -T node1 mongo --quiet --eval '"'"'load("/root/.mongorc.js");print(JSON.stringify(rs.add({_id:1,host:"node2:27017"})))'"'"' | jq' \
+    '[ "$("$BASH_SOURCE" compose exec -T node1 mongo --quiet --eval '"'"'load("/root/.mongorc.js");print(rs.add({_id:1,host:"node2:27017"}).ok)'"'"')" -eq 1 ]'
+  wait-for --msg="Add node3 to replicaSet..." --fail \
+    --debug='"$BASH_SOURCE" compose exec -T node1 mongo --quiet --eval '"'"'load("/root/.mongorc.js");print(JSON.stringify(rs.add({_id:2,host:"node3:27017"})))'"'"' | jq' \
+    '[ "$("$BASH_SOURCE" compose exec -T node1 mongo --quiet --eval '"'"'load("/root/.mongorc.js");print(rs.add({_id:2,host:"node3:27017"}).ok)'"'"')" -eq 1 ]'
   wait-for --min=3 --msg="1st cluster 1st start initialized..." --fail \
-    --debug='"$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret --quiet --eval "JSON.stringify(rs.status())" | jq' \
-    '[ "$("$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret --quiet --eval "JSON.stringify(rs.status())" | jq ".ok")" -eq 1 ]'
+    --debug='"$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret admin --quiet --eval "JSON.stringify(rs.status())" | jq' \
+    '[ "$("$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret admin --quiet --eval "JSON.stringify(rs.status())" | jq ".ok")" -eq 1 ]'
   "$BASH_SOURCE" compose stop 2>/dev/null || exit
 
   "$BASH_SOURCE" compose start 2>/dev/null || exit
@@ -139,9 +145,9 @@ test)
     --debug='"$BASH_SOURCE" compose logs 2>&1 | grep -F "prestart-keyFile.sh: "' \
     '[ "$("$BASH_SOURCE" compose logs 2>&1 | grep -F "prestart-keyFile.sh: " | wc -l)" -eq 6 ]'
   wait-for --msg="1st cluster 2st start initialized..." --fail \
-    --debug='"$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret --quiet --eval "JSON.stringify(rs.status())" | jq' \
-    '[ "$("$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret --quiet --eval "JSON.stringify(rs.status())" | jq ".ok")" -eq 1 ]'
-  "$BASH_SOURCE" compose down 2>/dev/null || exit
+    --debug='"$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret admin --quiet --eval "JSON.stringify(rs.status())" | jq' \
+    '[ "$("$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret admin --quiet --eval "JSON.stringify(rs.status())" | jq ".ok")" -eq 1 ]'
+  "$BASH_SOURCE" compose down -v 2>/dev/null || exit
 
   INIT_CLUSTER='{_id:"rs", members: [{_id:0,host:"node1:27017"},{_id:1,host:"node2:27017"},{_id:2,host:"node3:27017"}]}' "$BASH_SOURCE" compose up -d 2>/dev/null || exit
   wait-for --min=3 --msg="Wait for 2nd cluster..." --fail '[ "$("$BASH_SOURCE" compose exec -T node1 mongo --quiet --eval "1")" -eq 1 ]'
@@ -149,9 +155,8 @@ test)
     --debug='"$BASH_SOURCE" compose logs 2>&1 | grep -F "prestart-keyFile.sh: "' \
     '[ "$("$BASH_SOURCE" compose logs 2>&1 | grep -F "prestart-keyFile.sh: " | wc -l)" -eq 3 ]'
   wait-for --msg="Wait for cluster auto initialized..." --fail \
-    --debug='"$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret --quiet --eval "JSON.stringify(rs.status())" | jq' \
-    '[ "$("$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret --quiet --eval "JSON.stringify(rs.status())" | jq ".ok")" -eq 1 ]'
-
+    --debug='"$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret admin --quiet --eval "JSON.stringify(rs.status())" | jq' \
+    '[ "$("$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret admin --quiet --eval "JSON.stringify(rs.status())" | jq ".ok")" -eq 1 ]'
   TEST_RESULT='\x1b[32mOK\x1b[0m'
   ;;
 push)
