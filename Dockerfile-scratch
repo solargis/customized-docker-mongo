@@ -1,0 +1,38 @@
+FROM ubuntu:focal as start
+RUN apt-get update
+RUN apt-get install -y --no-install-recommends curl ca-certificates
+
+FROM start as build-go
+RUN apt-get install -y --no-install-recommends git
+ENV PATH="$PATH:/usr/local/go/bin"
+RUN curl -sL https://golang.org/dl/go1.15.3.linux-amd64.tar.gz | tar xzf - -C /usr/local
+WORKDIR /opt
+COPY src initializer
+RUN cd initializer && go build && chmod +x initializer && cp initializer /usr/local/bin/
+
+FROM start as get-deamonize
+RUN apt-get install -y --no-install-recommends build-essential
+ARG DEAMONIZE_URL=https://github.com/bmc/daemonize/archive/release-1.7.8.tar.gz
+RUN curl -sL "$DEAMONIZE_URL" | tar xzf - && cd daemonize-* && sh configure && make && cp ./daemonize /usr/local/bin/
+
+FROM start as get-monogo
+# https://www.mongodb.org/dl/linux/x86_64
+# http://downloads.mongodb.org/linux/mongodb-linux-x86_64-2.6.12.tgz
+ARG MONGO=http://downloads.mongodb.org/linux/mongodb-linux-x86_64-3.4.24.tgz
+RUN curl -sL "$MONGO" | tar xzf - && mv mongodb-* mongodb && cp mongodb/bin/* /usr/local/bin/
+
+
+FROM ubuntu:focal
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gosu jq openssl \
+    && rm -rf /var/lib/apt/lists/* \
+    && adduser --system --home /srv/monogdb --shell /bin/bash --disabled-password mongodb \
+    && mkdir -p /data/db /data/configdb
+COPY --from=get-deamonize /usr/local/bin /usr/local/bin
+COPY --from=get-monogo /usr/local/bin /usr/local/bin
+COPY --from=build-go /usr/local/bin /usr/local/bin
+COPY ./mongo-old/docker-entrypoint.sh /usr/local/bin/
+COPY ./docker-hooks.d/ /docker-hooks.d/
+COPY ./lib/ /usr/local/lib/
+ENTRYPOINT [ "docker-entrypoint.sh" ]
+CMD [ "mongod" ]

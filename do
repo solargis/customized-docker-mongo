@@ -1,7 +1,17 @@
 #!/bin/bash
+# MONGO="${MONGO:-4.2}"
+# MONGO="${MONGO:-http://downloads.mongodb.org/linux/mongodb-linux-x86_64-2.4.6.tgz}"
+MONGO="${MONGO:-http://downloads.mongodb.org/linux/mongodb-linux-x86_64-2.6.12.tgz}"
+
 cd "$(dirname "$BASH_SOURCE")"
-MONGO_TAG="${MONGO_TAG:-4.2}"
-export IMAGE="solargis/mongo:${TAG:-$MONGO_TAG}"
+fail() { "$@"; exit 1; }
+
+if [ "${MONGO:0:7}" == "http://" ] || [ "${MONGO:0:8}" == "https://" ]; then
+  TAG="v$(echo "$MONGO" | perl -ne '/-(\d+.\d+\.\d+(-[a-z\d\-]+)?).tgz$/ && print $1')"
+  [ "$TAG" == "v" ] && fail "Unable find mongo version in url: $MONGO"
+else TAG="${MONGO}"
+fi
+export IMAGE="solargis/mongo"
 export CONTAINER="test-mongo"
 
 container() { echo -n "$@ "; docker "$@" "$CONTAINER"; }
@@ -48,7 +58,7 @@ _start() {
   _is_runing -a && container rm -v
   docker run -d "$@" --name "$CONTAINER" \
   -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD=secret \
-  "$IMAGE" --replSet rs
+  "$IMAGE:$TAG" --replSet rs
 }
 _mongo_status() {
   local FILTER=cat
@@ -65,7 +75,8 @@ _dim() {
 case "$1" in
 build)
   shift
-  exec docker build -t "$IMAGE" --build-arg "MONGO_TAG=$MONGO_TAG" "$@" .
+  [ "${TAG:0:1}" == "v" ] && set -- -f Dockerfile-scratch "$@"
+  exec docker build -t "$IMAGE:$TAG" --build-arg "MONGO=$MONGO" "$@" .
   ;;
 inspect)
   "$BASH_SOURCE" build && _start || exit
@@ -102,7 +113,6 @@ test)
     echo -e "TEST_RESULT=${TEST_RESULT:-\x1b[31mFAIL\x1b[0m}"; \
   }' EXIT
   error() { echo -e "\x1b[31mError:\x1b[0m" "$@" >&2; }
-  fail() { "$@"; exit 1; }
 
   _start 2>/dev/null || exit
   wait-for --min=3 --msg="Wait for 1st start..." --fail '[ "$(docker exec test-mongo mongo --host localhost --quiet --eval "print(1)")" == 1 ]'
@@ -161,12 +171,12 @@ test)
   ;;
 push)
   shift
-  "$BASH_SOURCE" test "$@" && docker push "$IMAGE"
+  "$BASH_SOURCE" test "$@" && docker push "$IMAGE:$TAG"
   ;;
 compose)
   shift
   cd "$(dirname "$BASH_SOURCE")"
-  exec docker-compose "$@"
+  IMAGE="$IMAGE:$TAG" exec docker-compose "$@"
   ;;
 *)
   echo "USAGE:"
