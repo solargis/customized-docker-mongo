@@ -116,13 +116,13 @@ test)
 
   _start 2>/dev/null || exit
   wait-for --min=3 --msg="Wait for 1st start..." --fail '[ "$(docker exec test-mongo mongo --host localhost --quiet --eval "print(1)")" == 1 ]'
-  [ "$(_mongo_status | jq '.code')" == 94 ] || fail _mongo_status --prety
+  [ "$(_mongo_status | jq '.startupStatus')" == 3 ] || fail _mongo_status --prety
   LOGS="$(docker logs -t "$CONTAINER" | grep -F 'prestart-keyFile.sh: ')"; echo -e "\x1b[2m$LOGS\x1b[0m"
   [ "$(echo "$LOGS" | wc -l)" -eq 1 ] || fail error "--keyFile was not initialized with DB"
   container stop 2>/dev/null && container start 2>/dev/null || exit
 
   wait-for --min=3 --msg="Wait for 2nd start..." --fail '[ "$(docker exec test-mongo mongo --host localhost --quiet --eval "1")" == 1 ]'
-  [ "$(_mongo_status | jq '.code')" == 94 ] || fail _mongo_status --prety
+  [ "$(_mongo_status | jq '.startupStatus')" == 3 ] || fail _mongo_status --prety
   LOGS="$(docker logs -t "$CONTAINER" | grep -F 'prestart-keyFile.sh: ')"; echo -e "\x1b[2m$LOGS\x1b[0m"
   [ "$(echo "$LOGS" | wc -l)" -eq 2 ] || fail error "--keyFile was not initialized when DB is already"
 
@@ -133,7 +133,7 @@ test)
     '[ "$("$BASH_SOURCE" compose logs 2>&1 | grep -F "prestart-keyFile.sh: " | wc -l)" -eq 3 ]'
   wait-for --msg="Check auto authorize mongo cli..." --fail \
     --debug='"$BASH_SOURCE" compose exec -T node1 mongo --quiet --eval "load('"'"'/root/.mongorc.js'"'"');print(JSON.stringify(rs.status()))" | jq' \
-    '[ "$("$BASH_SOURCE" compose exec -T node1 mongo --quiet --eval "load('"'"'/root/.mongorc.js'"'"');print(rs.status().code)")" -eq 94 ]'
+    '[ "$("$BASH_SOURCE" compose exec -T node1 mongo --quiet --eval "load('"'"'/root/.mongorc.js'"'"');print(rs.status().startupStatus)")" -eq 3 ]'
   RESULT="$("$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret admin --quiet --eval \
     'JSON.stringify(rs.initiate({_id:"rs", members: [{_id:0,host:"node1:27017"}]}))')"
     [ "$(jq '.ok' <<<"$RESULT")" -eq 1 ] || fail jq <<<"$RESULT"

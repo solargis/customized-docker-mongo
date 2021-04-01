@@ -24,7 +24,7 @@ RUN curl -sL "$MONGO" | tar xzf - && mv mongodb-* mongodb && cp mongodb/bin/* /u
 
 FROM ubuntu:focal
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gosu jq openssl \
+    && apt-get install -y --no-install-recommends gosu jq openssl tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && adduser --system --home /srv/monogdb --shell /bin/bash --disabled-password mongodb \
     && mkdir -p /data/db /data/configdb
