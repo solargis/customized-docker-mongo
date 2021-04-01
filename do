@@ -75,7 +75,7 @@ _dim() {
 case "$1" in
 build)
   shift
-  [ "${TAG:0:1}" == "v" ] && set -- -f Dockerfile-scratch "$@"
+  [ "${TAG:0:1}" == "v" ] && set -- -f Dockerfile.scratch "$@"
   exec docker build -t "$IMAGE:$TAG" --build-arg "MONGO=$MONGO" "$@" .
   ;;
 inspect)
