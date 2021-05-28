@@ -2,9 +2,12 @@
 # MONGO="${MONGO:-4.2}"
 # MONGO="${MONGO:-http://downloads.mongodb.org/linux/mongodb-linux-x86_64-2.4.6.tgz}"
 MONGO="${MONGO:-http://downloads.mongodb.org/linux/mongodb-linux-x86_64-2.6.12.tgz}"
+SUPPORTED_VERSIONS=("2.6.12" "3.4.24")
 
 cd "$(dirname "$BASH_SOURCE")"
+error() { echo -e "\x1b[31mError:\x1b[0m" "$@" >&2; }
 fail() { "$@"; exit 1; }
+me() { "$BASH_SOURCE" "$@"; }
 
 if [ "${MONGO:0:7}" == "http://" ] || [ "${MONGO:0:8}" == "https://" ]; then
   TAG="v$(echo "$MONGO" | perl -ne '/-(\d+.\d+\.\d+(-[a-z\d\-]+)?).tgz$/ && print $1')"
@@ -60,13 +63,6 @@ _start() {
   -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD=secret \
   "$IMAGE:$TAG" --replSet rs
 }
-_mongo_status() {
-  local FILTER=cat
-  [ "$1" == "--prety" ] && FILTER=jq
-  docker exec "$CONTAINER" \
-  mongo --username 'root' --password 'secret' admin \
-  --quiet --eval "JSON.stringify(rs.status())" | $FILTER
-}
 _dim() {
   ("$@" | perl -ne 's/\x1b\[([0-9;]+)m/\x1b[$1;2m/g; s/\n/\x1b[0m\n/; print " \x1b[32m| \x1b[0;2m$_"') 2>&1 \
     | perl -ne 'if (/^ \x1b\[32m| \x1b\[0;2m/){ print $_; } else { s/\x1b\[([0-9;]+)m/\x1b[$1;2m/g; print " \x1b[31m| \x1b[0;2m$_\x1b[0m"; }'
@@ -79,7 +75,7 @@ build)
   exec docker build -t "$IMAGE:$TAG" --build-arg "MONGO=$MONGO" "$@" .
   ;;
 inspect)
-  "$BASH_SOURCE" build && _start || exit
+  me build && _start || exit
   [ "$2" == "logs" ] && container logs -tf &
   trap '{ container stop; container rm; }' EXIT
   shift
@@ -87,14 +83,14 @@ inspect)
   inspect
   ;;
 exec)
-  "$BASH_SOURCE" build && _start --rm || exit
+  me build && _start --rm || exit
   trap '{ container stop; }' EXIT
   shift
   [ "$#" -eq 0 ] && set -- bash
   docker exec -it "$CONTAINER" "$@"
   ;;
 mongo)
-  "$BASH_SOURCE" build && _start --rm || exit
+  me build && _start --rm || exit
   trap '{ container stop; }' EXIT
   wait-for --min=3 --msg="Wait for start..." --fail '[ "$(docker exec test-mongo mongo --host localhost --quiet --eval "1")" == 1 ]'
   shift
@@ -103,87 +99,109 @@ mongo)
 start)
   _start
   ;;
+rs_status)
+  ORIG_ARGS=( "$@" )
+  shift
+  CHECK=0; OTHER=();
+  for arg; do
+    case "$arg" in --check) CHECK=1;; *) OTHER=( "${OTHER[@]}" "$arg" );; esac
+  done; set -- "${OTHER[@]}"
+
+  if [ "$#" -eq 0 ]; then
+    RS_STATUS="$(docker exec "$CONTAINER" mongo --username 'root' --password 'secret' admin --quiet --eval "print(JSON.stringify(rs.status()))")"
+  elif [ "$#" -eq 1 ]; then
+    RS_STATUS="$(me compose exec -T "$1" mongo --quiet --eval 'load("/root/.mongorc.js");print(JSON.stringify(rs.status()))')"
+  else
+    fail error "Illegal usage: $BASH_SOURCE ${ORIG_ARGS[@]}"
+  fi
+  [ "$(echo "$CHECK")" -eq 1 ] && { [ "$(echo "$RS_STATUS" | jq .startupStatus)" == 3 ] || [ "$(echo "$RS_STATUS" | jq .code)" == 94 ]; exit; }
+  echo "$RS_STATUS" | jq
+  ;;
 test)
   INSPECT="$2"
-  "$BASH_SOURCE" build || exit
+  me build || exit
   trap '{ \
     echo -e "\x1b[33;2mClean up after...\x1b[0m"; \
     [ -z "$TEST_RESULT" -a "$INSPECT" == "inspect" ] && inspect; \
-    _dim container stop; _dim container rm -v; _dim "$BASH_SOURCE" compose down -v; \
+    _dim container stop; _dim container rm -v; _dim me compose down -v; \
     echo -e "TEST_RESULT=${TEST_RESULT:-\x1b[31mFAIL\x1b[0m}"; \
   }' EXIT
-  error() { echo -e "\x1b[31mError:\x1b[0m" "$@" >&2; }
 
   _start 2>/dev/null || exit
   wait-for --min=3 --msg="Wait for 1st start..." --fail '[ "$(docker exec test-mongo mongo --host localhost --quiet --eval "print(1)")" == 1 ]'
-  [ "$(_mongo_status | jq '.startupStatus')" == 3 ] || fail _mongo_status --prety
+  me rs_status --check || fail me rs_status
   LOGS="$(docker logs -t "$CONTAINER" | grep -F 'prestart-keyFile.sh: ')"; echo -e "\x1b[2m$LOGS\x1b[0m"
   [ "$(echo "$LOGS" | wc -l)" -eq 1 ] || fail error "--keyFile was not initialized with DB"
   container stop 2>/dev/null && container start 2>/dev/null || exit
 
   wait-for --min=3 --msg="Wait for 2nd start..." --fail '[ "$(docker exec test-mongo mongo --host localhost --quiet --eval "1")" == 1 ]'
-  [ "$(_mongo_status | jq '.startupStatus')" == 3 ] || fail _mongo_status --prety
+  me rs_status --check || fail me rs_status
   LOGS="$(docker logs -t "$CONTAINER" | grep -F 'prestart-keyFile.sh: ')"; echo -e "\x1b[2m$LOGS\x1b[0m"
   [ "$(echo "$LOGS" | wc -l)" -eq 2 ] || fail error "--keyFile was not initialized when DB is already"
 
-  "$BASH_SOURCE" compose up -d 2>/dev/null || exit
+  me compose up -d 2>/dev/null || exit
 
-  wait-for --min=3 --msg="1st cluster 1st start..." --fail '[ "$("$BASH_SOURCE" compose exec -T node1 mongo --quiet --eval "1")" -eq 1 ]'
-  wait-for --msg="All nodes was initialized..." --fail --debug='"$BASH_SOURCE" compose logs 2>&1 | grep -F "prestart-keyFile.sh: "' \
-    '[ "$("$BASH_SOURCE" compose logs 2>&1 | grep -F "prestart-keyFile.sh: " | wc -l)" -eq 3 ]'
-  wait-for --msg="Check auto authorize mongo cli..." --fail \
-    --debug='"$BASH_SOURCE" compose exec -T node1 mongo --quiet --eval "load('"'"'/root/.mongorc.js'"'"');print(JSON.stringify(rs.status()))" | jq' \
-    '[ "$("$BASH_SOURCE" compose exec -T node1 mongo --quiet --eval "load('"'"'/root/.mongorc.js'"'"');print(rs.status().startupStatus)")" -eq 3 ]'
-  RESULT="$("$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret admin --quiet --eval \
+  wait-for --min=3 --msg="1st cluster 1st start..." --fail '[ "$(me compose exec -T node1 mongo --quiet --eval "1")" -eq 1 ]'
+  wait-for --msg="All nodes was initialized..." --fail --debug='me compose logs 2>&1 | grep -F "prestart-keyFile.sh: "' \
+    '[ "$(me compose logs 2>&1 | grep -F "prestart-keyFile.sh: " | wc -l)" -eq 3 ]'
+  wait-for --msg="Check auto authorize mongo cli..." --fail --debug='me rs_status node1' 'me rs_status node1 --check'
+  RESULT="$(me compose exec -T node1 mongo -u root -p secret admin --quiet --eval \
     'JSON.stringify(rs.initiate({_id:"rs", members: [{_id:0,host:"node1:27017"}]}))')"
     [ "$(jq '.ok' <<<"$RESULT")" -eq 1 ] || fail jq <<<"$RESULT"
   wait-for --msg="Add node2 to replicaSet..." --fail \
-    --debug='"$BASH_SOURCE" compose exec -T node1 mongo --quiet --eval '"'"'load("/root/.mongorc.js");print(JSON.stringify(rs.add({_id:1,host:"node2:27017"})))'"'"' | jq' \
-    '[ "$("$BASH_SOURCE" compose exec -T node1 mongo --quiet --eval '"'"'load("/root/.mongorc.js");print(rs.add({_id:1,host:"node2:27017"}).ok)'"'"')" -eq 1 ]'
+    --debug='me compose exec -T node1 mongo --quiet --eval '"'"'load("/root/.mongorc.js");print(JSON.stringify(rs.add({_id:1,host:"node2:27017"})))'"'"' | jq' \
+    '[ "$(me compose exec -T node1 mongo --quiet --eval '"'"'load("/root/.mongorc.js");print(rs.add({_id:1,host:"node2:27017"}).ok)'"'"')" -eq 1 ]'
   wait-for --msg="Add node3 to replicaSet..." --fail \
-    --debug='"$BASH_SOURCE" compose exec -T node1 mongo --quiet --eval '"'"'load("/root/.mongorc.js");print(JSON.stringify(rs.add({_id:2,host:"node3:27017"})))'"'"' | jq' \
-    '[ "$("$BASH_SOURCE" compose exec -T node1 mongo --quiet --eval '"'"'load("/root/.mongorc.js");print(rs.add({_id:2,host:"node3:27017"}).ok)'"'"')" -eq 1 ]'
+    --debug='me compose exec -T node1 mongo --quiet --eval '"'"'load("/root/.mongorc.js");print(JSON.stringify(rs.add({_id:2,host:"node3:27017"})))'"'"' | jq' \
+    '[ "$(me compose exec -T node1 mongo --quiet --eval '"'"'load("/root/.mongorc.js");print(rs.add({_id:2,host:"node3:27017"}).ok)'"'"')" -eq 1 ]'
   wait-for --min=3 --msg="1st cluster 1st start initialized..." --fail \
-    --debug='"$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret admin --quiet --eval "JSON.stringify(rs.status())" | jq' \
-    '[ "$("$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret admin --quiet --eval "JSON.stringify(rs.status())" | jq ".ok")" -eq 1 ]'
-  "$BASH_SOURCE" compose stop 2>/dev/null || exit
+    --debug='me compose exec -T node1 mongo -u root -p secret admin --quiet --eval "JSON.stringify(rs.status())" | jq' \
+    '[ "$(me compose exec -T node1 mongo -u root -p secret admin --quiet --eval "JSON.stringify(rs.status())" | jq ".ok")" -eq 1 ]'
+  me compose stop 2>/dev/null || exit
 
-  "$BASH_SOURCE" compose start 2>/dev/null || exit
+  me compose start 2>/dev/null || exit
   wait-for --min=3 --msg="Wait for 1st cluster 2nd start..." --fail \
-    '[ "$("$BASH_SOURCE" compose exec -T node1 mongo --quiet --eval "1")" -eq 1 ]'
+    '[ "$(me compose exec -T node1 mongo --quiet --eval "1")" -eq 1 ]'
   wait-for --msg="All nodes was initialized 2nd time..." --fail \
-    --debug='"$BASH_SOURCE" compose logs 2>&1 | grep -F "prestart-keyFile.sh: "' \
-    '[ "$("$BASH_SOURCE" compose logs 2>&1 | grep -F "prestart-keyFile.sh: " | wc -l)" -eq 6 ]'
+    --debug='me compose logs 2>&1 | grep -F "prestart-keyFile.sh: "' \
+    '[ "$(me compose logs 2>&1 | grep -F "prestart-keyFile.sh: " | wc -l)" -eq 6 ]'
   wait-for --msg="1st cluster 2st start initialized..." --fail \
-    --debug='"$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret admin --quiet --eval "JSON.stringify(rs.status())" | jq' \
-    '[ "$("$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret admin --quiet --eval "JSON.stringify(rs.status())" | jq ".ok")" -eq 1 ]'
-  "$BASH_SOURCE" compose down -v 2>/dev/null || exit
+    --debug='me compose exec -T node1 mongo -u root -p secret admin --quiet --eval "JSON.stringify(rs.status())" | jq' \
+    '[ "$(me compose exec -T node1 mongo -u root -p secret admin --quiet --eval "JSON.stringify(rs.status())" | jq ".ok")" -eq 1 ]'
+  me compose down -v 2>/dev/null || exit
 
-  INIT_CLUSTER='{_id:"rs", members: [{_id:0,host:"node1:27017"},{_id:1,host:"node2:27017"},{_id:2,host:"node3:27017"}]}' "$BASH_SOURCE" compose up -d 2>/dev/null || exit
-  wait-for --min=3 --msg="Wait for 2nd cluster..." --fail '[ "$("$BASH_SOURCE" compose exec -T node1 mongo --quiet --eval "1")" -eq 1 ]'
+  INIT_CLUSTER='{_id:"rs", members: [{_id:0,host:"node1:27017"},{_id:1,host:"node2:27017"},{_id:2,host:"node3:27017"}]}' me compose up -d 2>/dev/null || exit
+  wait-for --min=3 --msg="Wait for 2nd cluster..." --fail '[ "$(me compose exec -T node1 mongo --quiet --eval "1")" -eq 1 ]'
   wait-for --msg="All nodes was initialized..." --fail \
-    --debug='"$BASH_SOURCE" compose logs 2>&1 | grep -F "prestart-keyFile.sh: "' \
-    '[ "$("$BASH_SOURCE" compose logs 2>&1 | grep -F "prestart-keyFile.sh: " | wc -l)" -eq 3 ]'
+    --debug='me compose logs 2>&1 | grep -F "prestart-keyFile.sh: "' \
+    '[ "$(me compose logs 2>&1 | grep -F "prestart-keyFile.sh: " | wc -l)" -eq 3 ]'
   wait-for --msg="Wait for cluster auto initialized..." --fail \
-    --debug='"$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret admin --quiet --eval "JSON.stringify(rs.status())" | jq' \
-    '[ "$("$BASH_SOURCE" compose exec -T node1 mongo -u root -p secret admin --quiet --eval "JSON.stringify(rs.status())" | jq ".ok")" -eq 1 ]'
+    --debug='me compose exec -T node1 mongo -u root -p secret admin --quiet --eval "JSON.stringify(rs.status())" | jq' \
+    '[ "$(me compose exec -T node1 mongo -u root -p secret admin --quiet --eval "JSON.stringify(rs.status())" | jq ".ok")" -eq 1 ]'
   TEST_RESULT='\x1b[32mOK\x1b[0m'
   ;;
 push)
   shift
-  "$BASH_SOURCE" test "$@" && docker push "$IMAGE:$TAG"
+  me test "$@" && docker push "$IMAGE:$TAG"
   ;;
 compose)
   shift
   cd "$(dirname "$BASH_SOURCE")"
   IMAGE="$IMAGE:$TAG" exec docker-compose "$@"
   ;;
+publish)
+  [ "$#" -eq 1 ] || fail error "Illegal usage: $BASH_SOURCE $@"
+  for version in "${SUPPORTED_VERSIONS[@]}"; do
+    MONGO="http://downloads.mongodb.org/linux/mongodb-linux-x86_64-$version.tgz" me push || exit
+  done
+  ;;
 *)
   echo "USAGE:"
   echo "  $(basename "$0") bulid"
   echo "  $(basename "$0") test"
-  echo "  $(basename "$0") start  - a container in dettached mode"
+  echo "  $(basename "$0") start          # a container in dettached mode"
   echo "  $(basename "$0") exec [<cmd> <arg>...]"
   echo "  $(basename "$0") push"
+  echo "  $(basename "$0") publish        # build, test and push all supported versions"
   ;;
 esac
