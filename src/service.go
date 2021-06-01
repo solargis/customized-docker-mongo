@@ -79,10 +79,40 @@ func status(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+func activeStatus(w http.ResponseWriter, req *http.Request) {
+	out, err := mongoEval(fmt.Sprintf("var config = %s; config.dryrun = true;", os.Getenv("INIT_CLUSTER")), "/usr/local/lib/init-mongo-cluster.js")
+	if err == nil {
+		dat := clusterStatus{}
+		if len(out) > 0 {
+			resultLines := strings.Split(strings.TrimSpace(string(out)), "\n")
+			for i := 0; i < len(resultLines)-1; i++ {
+				warningLogger.Println(resultLines[i])
+			}
+			infoLogger.Println("Parsing result from init-mongo-cluster.js:", resultLines[len(resultLines)-1])
+			if err := json.Unmarshal([]byte(resultLines[len(resultLines)-1]), &dat); err != nil {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				w.Header().Set("Content-Type", "application/json")
+				var result, _ = json.Marshal(fmt.Sprintf("%s", err))
+				var raw, _ = json.Marshal(fmt.Sprintf("%s", string(out)))
+				w.Write([]byte(fmt.Sprintf("{\"ok\":0, \"err\": %s, \"raw\": %s}\n", result, raw)))
+			} else {
+				w.Header().Set("Content-Type", "application/json")
+				var result, _ = json.Marshal(dat)
+				w.Write([]byte(fmt.Sprintf("{\"ok\":1, \"result\": %s}\n", result)))
+			}
+		}
+	} else {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Header().Set("Content-Type", "application/json")
+		var result, _ = json.Marshal(fmt.Sprintf("%s", err))
+		w.Write([]byte(fmt.Sprintf("{\"ok\":0, \"err\": %s}\n", result)))
+	}
+}
+
 func healthcheck(w http.ResponseWriter, req *http.Request) {
 	_, noPrimary := req.URL.Query()["noPrimary"]
 	if state.Ok && verifyMongoState(!noPrimary) {
-		w.WriteHeader(http.StatusNoContent)
+		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("healthy"))
 	} else {
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -116,6 +146,7 @@ func favicon(w http.ResponseWriter, req *http.Request) {
 func serve() {
 	http.HandleFunc("/favicon.ico", favicon)
 	http.HandleFunc("/healthcheck", healthcheck)
+	http.HandleFunc("/status", activeStatus)
 	http.HandleFunc("/", status)
 	infoLogger.Printf("Starting service http://localhost:%d/", port)
 	http.ListenAndServe(fmt.Sprintf(":%d", port), nil)
@@ -245,6 +276,8 @@ type statusMember struct {
 }
 type clusterStatus struct {
 	Ok           int            `json:"ok"`
+	Ready        bool           `json:"ready"`
+	NotYetReady  []string       `json:"notYetReady,omitempty"`
 	ErrorCode    int            `json:"code,omitempty"`
 	ErrorName    string         `json:"codeName,omitempty"`
 	Messages     []string       `json:"messages,omitempty"`
@@ -262,7 +295,7 @@ type clusterStatus struct {
 func verifyMongoState(withPrimary bool) bool {
 	tests := []string{"rs.status().ok === 1", "db.stats().ok === 1"}
 	if withPrimary {
-		tests = append(tests, "!!rs.status().members.find(m => m.state === 1)")
+		tests = append(tests, "!!rs.status().members.reduce(function (r,m) { return m.state === 1 ? m : r; }, null)")
 	}
 	out, err := mongoEval("print(" + strings.Join(tests, " && ") + ");")
 	if err != nil {
@@ -278,11 +311,15 @@ func initClusterConfig(config string) bool {
 	state.InitCluster.Try++
 	out, err := mongoEval(fmt.Sprintf("var config = %s;", config), "/usr/local/lib/init-mongo-cluster.js")
 	if err == nil {
-		infoLogger.Println("Raw result of init-mongo-cluster.js:", string(out))
 		dat := clusterStatus{}
 		if len(out) > 0 {
-
-			if err := json.Unmarshal([]byte(out), &dat); err != nil {
+			resultLines := strings.Split(strings.TrimSpace(string(out)), "\n")
+			for i := 0; i < len(resultLines)-1; i++ {
+				warningLogger.Println(resultLines[i])
+			}
+			infoLogger.Println("Parsing result from init-mongo-cluster.js:", resultLines[len(resultLines)-1])
+			if err := json.Unmarshal([]byte(resultLines[len(resultLines)-1]), &dat); err != nil {
+				warningLogger.Println("Raw result of init-mongo-cluster.js:", string(out))
 				panic(err)
 			}
 			var result, _ = json.Marshal(dat)
@@ -296,9 +333,7 @@ func initClusterConfig(config string) bool {
 			}
 			state.InitCluster.Status = &dat
 			state.InitCluster.Error = nil
-			return dat.Ok == 1 &&
-				len(dat.Members) == len(dat.Config.Members) &&
-				find(dat.Members, func(it statusMember) bool { return it.State == 1 }) != nil
+			return dat.Ready
 		}
 	} else {
 		state.InitCluster.Error = strings.Split(strings.TrimSpace(fmt.Sprintf("%s\n%s", err, string(out))), "\n")
