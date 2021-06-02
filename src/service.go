@@ -11,14 +11,16 @@ import (
 	"os/exec"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // State `json:"action,omitempty"`
 type State struct {
-	Ok          bool `json:"ok"`
-	InitCluster struct {
+	Ok            bool  `json:"ok"`
+	ClientVersion []int `json:"client_version"`
+	InitCluster   struct {
 		Try      int            `json:"tries"`
 		Complete bool           `json:"complete"`
 		Status   *clusterStatus `json:"status,omitempty"`
@@ -154,15 +156,20 @@ func serve() {
 
 func replSetConnectArgs(db string) []string {
 	if state.InitCluster.Status != nil && (*state.InitCluster.Status).Ok == 1 {
-		nodes := make([]string, len((*state.InitCluster.Status).Members))
-		for i, member := range (*state.InitCluster.Status).Members {
-			nodes[i] = member.Name
+		nodes := []string{}
+		for _, member := range (*state.InitCluster.Status).Config.Members {
+			if (member.ArbiterOnly == nil || !*member.ArbiterOnly) && (member.Priority == nil || *member.Priority >= 1) {
+				nodes = append(nodes, member.Host)
+			}
 		}
-		username, password := os.Getenv("MONGO_INITDB_ROOT_USERNAME"), os.Getenv("MONGO_INITDB_ROOT_PASSWORD")
-		result := []string{"db_address://" + strings.Join(nodes, ",")}
+		result := []string{"mongodb://" + strings.Join(nodes, ",")}
 		if db != "" {
 			result[0] = result[0] + "/" + db
 		}
+		if len(nodes) > 1 {
+			result[0] = result[0] + "?replicaSet=" + (*state.InitCluster.Status).Set
+		}
+		username, password := os.Getenv("MONGO_INITDB_ROOT_USERNAME"), os.Getenv("MONGO_INITDB_ROOT_PASSWORD")
 		if username != "" && password != "" {
 			result = append(result, "--username", username, "--password", password, "--authenticationDatabase", "admin")
 		}
@@ -175,7 +182,7 @@ func replSetConnectArgs(db string) []string {
 }
 
 func mongoEval(js ...string) (string, error) {
-	infoLogger.Printf("evaluating: %+v", js)
+	infoLogger.Printf("Evaluating: %+v", js)
 	opts := []string{"--quiet"}
 	scripts := []string{}
 	var eval, dbAddress string
@@ -188,6 +195,8 @@ func mongoEval(js ...string) (string, error) {
 			if containsAny([]string{entry}, "-u", "--username", "-p", "--password", "--port", "--authenticationDatabase", "--authenticationMechanism") {
 				skip++
 				opts = append(opts, entry, js[i+1])
+			} else if containsAny([]string{entry}, "--version", "--help") {
+				opts = append(opts, entry)
 			} else {
 				panic(fmt.Sprintf("Unknown argument %s", entry))
 			}
@@ -202,8 +211,17 @@ func mongoEval(js ...string) (string, error) {
 		}
 	}
 
+	if state.ClientVersion != nil && state.ClientVersion[0] < 3 {
+		if strings.HasPrefix(dbAddress, "mongodb://") {
+			dbAddress = dbAddress[len("mongodb://"):]
+		}
+		if strings.Contains(dbAddress, "?") {
+			dbAddress = dbAddress[0:strings.Index(dbAddress, "?")]
+		}
+	}
+
 	username, password := os.Getenv("MONGO_INITDB_ROOT_USERNAME"), os.Getenv("MONGO_INITDB_ROOT_PASSWORD")
-	if username != "" && password != "" {
+	if username != "" && password != "" && !containsAny(opts, "--version", "--help") {
 		invoke, doAuth := "", fmt.Sprintf("function do_auth() { db.getSiblingDB('admin').auth('%s','%s'); }", username, password)
 		if !strings.Contains(dbAddress, "@") && !containsAny(opts, "-u", "--username") && !containsAny(opts, "-p", "--password") {
 			invoke = "do_auth();"
@@ -442,6 +460,24 @@ func dumpEnv() {
 }
 
 func main() {
+	state.ClientVersion = func() []int {
+		out, err := mongoEval("--version")
+		if err != nil {
+			panic(err)
+		} else {
+			re := regexp.MustCompile(`MongoDB shell version:?\sv?(\d+(\.\d+)+)`)
+			str_result := strings.Split(re.FindStringSubmatch(out)[1], ".")
+			int_result := make([]int, len(str_result))
+			for i, s := range str_result {
+				int_result[i], err = strconv.Atoi(s)
+				if err != nil {
+					panic(err)
+				}
+			}
+			return int_result
+		}
+	}()
+
 	if len(os.Args) > 1 && os.Args[1] == "check" {
 		infoLogger.SetOutput(ioutil.Discard)
 		withPrimary := len(os.Args) > 2 && os.Args[2] == "--with-primary"
