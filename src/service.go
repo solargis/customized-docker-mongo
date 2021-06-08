@@ -18,8 +18,9 @@ import (
 
 // State `json:"action,omitempty"`
 type State struct {
-	Ok            bool  `json:"ok"`
-	ClientVersion []int `json:"client_version"`
+	Ok            bool   `json:"ok"`
+	Host          string `json:"host"`
+	ClientVersion []int  `json:"client_version"`
 	InitCluster   struct {
 		Try      int            `json:"tries"`
 		Complete bool           `json:"complete"`
@@ -242,7 +243,7 @@ func mongoEval(js ...string) (string, error) {
 		opts = append(opts, scripts...)
 	}
 
-	infoLogger.Print("excuting: mongo " + formatCommand(opts))
+	infoLogger.Print("Executing: mongo " + formatCommand(opts))
 	cmd := exec.CommandContext(ctx, "mongo", opts...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -276,7 +277,6 @@ func formatCommand(opts []string) string {
 
 // ConfigMenber https://docs.mongodb.com/manual/reference/replica-configuration/#members
 type ConfigMenber struct {
-	ID           int                `json:"_id"`
 	Host         string             `json:"host"`
 	ArbiterOnly  *bool              `json:"arbiterOnly,omitempty"`
 	BuildIndexes *bool              `json:"buildIndexes,omitempty"`
@@ -287,10 +287,12 @@ type ConfigMenber struct {
 	Votes        *int               `json:"votes,omitempty"`
 }
 type statusMember struct {
+	ID       int    `json:"_id"`
 	Name     string `json:"name"`
 	Health   int    `json:"health"`
 	State    int    `json:"state"` // https://docs.mongodb.com/manual/reference/replica-states/
 	StateStr string `json:"stateStr"`
+	Self     *bool  `json:"self,omitempty"`
 }
 type clusterStatus struct {
 	Ok           int            `json:"ok"`
@@ -477,6 +479,12 @@ func main() {
 			return int_result
 		}
 	}()
+
+	hostname, err := os.Hostname()
+	if err != nil {
+		panic(err)
+	}
+	state.Host = hostname
 
 	if len(os.Args) > 1 && os.Args[1] == "check" {
 		infoLogger.SetOutput(ioutil.Discard)
